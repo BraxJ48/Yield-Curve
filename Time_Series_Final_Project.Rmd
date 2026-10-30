@@ -1,0 +1,412 @@
+---
+title: "TimeSeries_Final_Project"
+author: "La Mia Pruitt"
+date: "2026-03-29"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+project_lib <- file.path(getwd(), "r_libs")
+if (dir.exists(project_lib)) {
+  .libPaths(unique(c(normalizePath(project_lib, winslash = "/", mustWork = FALSE), .libPaths())))
+}
+user_lib <- Sys.getenv("R_LIBS_USER", unset = "")
+if (nzchar(user_lib) && dir.exists(user_lib)) {
+  .libPaths(unique(c(normalizePath(user_lib, winslash = "/", mustWork = FALSE), .libPaths())))
+}
+```
+
+```{r}
+
+library(dplyr)
+library(data.table)
+library(tidyr)
+library(naniar)
+library(ggplot2)
+library(forecast)
+library(tseries)
+library(ggplot2)
+```
+
+
+
+```{r}
+
+Yield_Curve <- fread("T10Y2Y.csv")
+
+Yield_Curve[, observation_date := as.IDate(observation_date, format = "%m/%d/%Y")]
+
+
+head(Yield_Curve)
+
+str(Yield_Curve)
+
+```
+```{r}
+
+miss_var_summary(Yield_Curve)
+
+vis_miss(Yield_Curve)
+
+
+ggplot(Yield_Curve, aes(x = observation_date, y = T10Y2Y)) +
+  geom_miss_point()
+
+```
+
+```{r}
+Yield_Curve %>%
+  mutate(weekday = weekdays(observation_date)) %>%
+  filter(is.na(T10Y2Y)) %>%
+  count(weekday)
+
+```
+
+```{r}
+
+Yield_Curve_clean <- Yield_Curve %>%
+  filter(!is.na(T10Y2Y))
+
+library(lubridate)
+
+Yield_Curve_weekly <- Yield_Curve_clean %>%
+  mutate(week = floor_date(observation_date, unit = "week")) %>%
+  group_by(week) %>%
+  summarise(T10Y2Y_weekly = mean(T10Y2Y, na.rm = TRUE))
+
+```
+
+
+```{r}
+
+
+start_year <- year(min(Yield_Curve_weekly$week))
+start_week <- isoweek(min(Yield_Curve_weekly$week))
+
+ts_weekly <- ts(Yield_Curve_weekly$T10Y2Y_weekly,
+                frequency = 52,
+                start = c(start_year, start_week))
+
+```
+
+
+```{r}
+
+str(ts_weekly)
+
+#The structure of the time series in currently incorrect, the dates don't line up correctly
+head(ts_weekly, 26)
+
+```
+
+```{r}
+
+ggplot(Yield_Curve_weekly, aes(x = week, y = T10Y2Y_weekly)) +
+  geom_line() +
+  labs(title = "Weekly Yield Curve", x = "Week", y = "T10Y2Y")
+
+```
+
+
+```{r}
+library(zoo)
+
+ts_weekly_zoo <- zoo(Yield_Curve_weekly$T10Y2Y_weekly,
+                     order.by = Yield_Curve_weekly$week)
+
+plot(ts_weekly_zoo)
+
+head(ts_weekly_zoo, 26)
+
+```
+
+```{r}
+lag1 <- stats::lag(ts_weekly_zoo, -1)  # Y_{t-1}
+lag2 <- stats::lag(ts_weekly_zoo, -2)  # Y_{t-2}
+
+
+#print(lag1)
+
+#print(lag2)
+
+acf(ts_weekly_zoo)
+pacf(ts_weekly_zoo)
+
+
+```
+
+
+
+```{r}
+
+#Model after this (NOT BEFORE!!!)
+
+ts_diff <- diff(ts_weekly_zoo)
+
+plot(ts_diff)
+
+acf(ts_diff)
+pacf(ts_diff)
+#iacf(ts_diff)
+
+
+```
+
+
+
+```{r}
+
+#Need to look at (dont use for now)
+
+library(forecast)
+
+model_2 <- auto.arima(ts_diff)
+
+summary(model_2)
+
+forecast_vals_2 <- forecast(model_2, h = 10)
+
+plot(forecast_vals_2)
+
+checkresiduals(model_2)
+
+```
+
+
+```{r}
+model_1D <- arima(ts_weekly_zoo, order = c(0,1,1))
+summary(model_1D)
+
+tsdiag(model_1D)
+
+forecast_vals_new <- forecast(model_1D, h = 10)
+
+plot(forecast_vals_new)
+
+checkresiduals(model_1D)
+
+# ADF test on model residuals
+adf.test(residuals(model_1D))
+
+coef(model_1D)
+theta1 <- coef(model_1D)["ma1"]
+
+cat("Fitted ARIMA(0,1,1) equation:\n")
+cat("(1 - B)Y_t = (1 + ", round(theta1, 4), "B)a_t\n", sep = "")
+cat("Expanded form:\n")
+cat("Y_t - Y_{t-1} = a_t + ", round(theta1, 4), "a_{t-1}\n", sep = "")
+cat("Equivalent form:\n")
+cat("Y_t = Y_{t-1} + a_t + ", round(theta1, 4), "a_{t-1}\n", sep = "")
+
+```
+```{r}
+
+
+res_df <- data.frame(res = residuals(model_1D))
+
+ggplot(res_df, aes(sample = res)) +
+  stat_qq() +
+  stat_qq_line(color = "red") +
+  labs(title = "Q-Q Plot of Residuals")
+```
+
+```{r}
+# #THIS IS THE CHUNK 1. Load data
+# Yield_Curve <- fread("T10Y2Y.csv") %>%
+#   mutate(observation_date = as.Date(observation_date, "%m/%d/%Y"))
+# 
+# # 2. Weekly aggregation
+# Yield_Curve_weekly <- Yield_Curve %>%
+#   filter(!is.na(T10Y2Y)) %>%
+#   mutate(week = floor_date(observation_date, unit = "week")) %>%
+#   group_by(week) %>%
+#   summarise(T10Y2Y_weekly = mean(T10Y2Y), .groups = "drop")
+# 
+# # 3. Cube root transform
+# Yield_Curve_weekly <- Yield_Curve_weekly %>%
+#   mutate(
+#     T10Y2Y_cuberoot = sign(T10Y2Y_weekly) * abs(T10Y2Y_weekly)^(1/3)
+#   )
+# 
+# # 4. Create global time trend
+# Yield_Curve_weekly <- Yield_Curve_weekly %>%
+#   mutate(t = 1:n())
+# 
+# # 5. Define recession breakpoints
+# breaks <- list(
+#   c("1981-07-01", "1982-11-01"),  # Volcker
+#   c("2007-12-01", "2009-06-01"),  # Great Recession
+#   c("2020-02-01", "2020-04-01"),  # COVID
+#   c("2022-07-01", "2024-08-01")   # inversion
+# )
+# 
+# #6. Generate structurally valid piecewise variables
+# for (i in seq_along(breaks)) {
+#   start_date <- as.Date(breaks[[i]][1])
+#   
+#   dummy_name <- paste0("D", i)
+#   trend_name <- paste0("S", i)
+#   
+#   # Level shift
+#   Yield_Curve_weekly[[dummy_name]] <- ifelse(
+#     Yield_Curve_weekly$week >= start_date, 1, 0
+#   )
+#   
+#   # Get start index safely
+#   start_index <- min(Yield_Curve_weekly$t[Yield_Curve_weekly$week >= start_date])
+#   
+#   # Slope change (piecewise linear trend)
+#   Yield_Curve_weekly[[trend_name]] <- ifelse(
+#     Yield_Curve_weekly$week >= start_date,
+#     Yield_Curve_weekly$t - start_index + 1,
+#     0
+#   )
+# }
+# 
+# 
+# # 7. Build time series
+# ts_weekly_cr <- ts(
+#   Yield_Curve_weekly$T10Y2Y_cuberoot,
+#   frequency = 52
+# )
+# 
+# # 8. Build xreg matrix (global trend + all breaks)
+# xreg_matrix <- as.matrix(
+#   Yield_Curve_weekly %>%
+#     select(starts_with("D"), starts_with("S"))
+# )
+# 
+# # 9. Fit ARIMAX model
+# fit <- auto.arima(
+#   ts_weekly_cr,
+#   xreg = xreg_matrix,
+#   seasonal = FALSE
+# )
+# 
+# # 10. Diagnostics
+# checkresiduals(fit)
+# 
+# # 11. Model summary
+# summary(fit)
+# 
+# # 12. Sanity check
+# str(Yield_Curve_weekly)
+```
+
+
+```{r}
+
+# 52-week forecast
+fc_1yr <- predict(model_1D, n.ahead = 52)
+
+# Forecasted values and standard errors
+pred <- fc_1yr$pred
+se   <- fc_1yr$se
+
+# 95% forecast intervals
+upper <- pred + 1.96 * se
+lower <- pred - 1.96 * se
+
+# Future weekly dates
+last_date <- tail(index(ts_weekly_zoo), 1)
+
+future_dates <- seq(from = last_date + 7,
+                    by = "7 days",
+                    length.out = 52)
+
+# Put forecasts into zoo objects
+pred_zoo  <- zoo(pred,  order.by = future_dates)
+upper_zoo <- zoo(upper, order.by = future_dates)
+lower_zoo <- zoo(lower, order.by = future_dates)
+```
+
+
+
+```{r}
+# Plot
+plot(ts_weekly_zoo,
+     xlim = c(min(index(ts_weekly_zoo)), max(future_dates)),
+     main = "1-Year Forecast for T10Y2Y",
+     xlab = "Time",
+     ylab = "T10Y2Y")
+
+lines(pred_zoo, col = "blue", lwd = 2)
+lines(upper_zoo, col = "red", lty = 2)
+lines(lower_zoo, col = "red", lty = 2)
+
+```
+
+
+```{r}
+
+forecast_table <- data.frame(
+  date = future_dates,
+  forecast = as.numeric(pred),
+  lower_95 = as.numeric(lower),
+  upper_95 = as.numeric(upper)
+)
+
+head(forecast_table)
+
+
+```
+
+```{r}
+
+print(forecast_table)
+
+```
+
+```{r}
+
+library(forecast)
+
+y <- as.numeric(ts_weekly_zoo)
+
+model_mc <- Arima(y, order = c(0, 1, 1))
+
+h <- 52
+nsim <- 10000
+set.seed(123)
+
+sim_matrix <- matrix(NA_real_, nrow = h, ncol = nsim)
+
+for (i in 1:nsim) {
+  sim_matrix[, i] <- as.numeric(simulate(model_mc, nsim = h, future = TRUE))
+}
+
+prob_inversion <- mean(apply(sim_matrix, 2, function(x) any(x < 0)))
+
+cat("Estimated probability of at least one inversion in the next 52 weeks:",
+    round(prob_inversion, 4), "\n")
+
+```
+
+```{r}
+
+pointwise_prob <- sapply(1:h, function(k) {
+  mean(sim_matrix[k, ] < 0)
+})
+
+plot(pointwise_prob, type = "l",
+     main = "Probability of Yield Curve Inversion at Each Week",
+     xlab = "Weeks Ahead",
+     ylab = "Probability")
+
+
+pointwise_table <- data.frame(
+  week = 1:h,
+  prob_inversion = pointwise_prob
+)
+
+head(pointwise_table)
+
+
+```
+
+
+
+```{r}
+pointwise_table
+```
